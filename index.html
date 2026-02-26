@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 合作与博弈游戏</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #1f2937; }
+  ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+  .chat-area { scroll-behavior: smooth; }
+  .typing-dot { animation: blink 1.4s infinite both; }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%,80%,100%{ opacity:0 } 40%{ opacity:1 } }
+  .msg-enter { animation: slideIn 0.3s ease-out; }
+  @keyframes slideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  .key-mask { -webkit-text-security: disc; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 h-screen overflow-hidden">
+
+<div id="app" class="flex flex-col h-full">
+  <!-- ========== HEADER ========== -->
+  <header class="bg-gray-900 border-b border-gray-800 px-6 py-2.5 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-2">
+      <span class="text-xl">🎮</span>
+      <h1 class="text-base font-bold tracking-wide">AI 合作与博弈游戏</h1>
+      <button @click="showInstructions=true" class="ml-2 text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-400 hover:text-white transition-colors">📖 说明</button>
+      <span v-if="!serverConnected" class="ml-2 text-xs px-2 py-1 bg-rose-900/50 rounded-lg text-rose-400 cursor-help" :title="serverError">⚠️ 后端未连接 ({{serverError || '点击查看详情'}})</span>
+      <span v-else class="ml-2 text-xs px-2 py-1 bg-emerald-900/50 rounded-lg text-emerald-400">✅ 后端已连接</span>
+      <button @click="initProviders" class="ml-2 text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-400 hover:text-white transition-colors">🔄 重试</button>
+    </div>
+    <nav class="flex gap-1">
+      <button v-for="t in tabs" :key="t.key" @click="activeTab=t.key"
+        :class="['px-4 py-1.5 rounded-lg text-sm font-medium transition-all',
+          activeTab===t.key?'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20':'text-gray-400 hover:text-white hover:bg-gray-800']">
+        {{t.icon}} {{t.label}}
+      </button>
+    </nav>
+  </header>
+
+  <!-- ========== MAIN CONTENT ========== -->
+  <main class="flex-1 overflow-hidden">
+
+    <!-- ===== TAB: 角色管理 ===== -->
+    <section v-show="activeTab==='roles'" class="h-full overflow-y-auto p-6">
+      <div class="max-w-6xl mx-auto">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="text-xl font-bold">🎭 AI 角色管理</h2>
+            <p class="text-gray-400 text-sm mt-1">配置参与博弈的 AI 角色及其人设与模型选择</p>
+            <p v-if="invalidRoles.length" class="text-amber-400 text-xs mt-2">
+              ⚠️ 以下角色的 Provider/模型组合无效，请编辑后保存：{{invalidRoles.map(r=>r.name).join('、')}}
+            </p>
+            <p v-if="testResultMsg" :class="['mt-2 text-xs px-3 py-2 rounded-lg inline-flex items-center gap-2', testResultType==='success'?'bg-emerald-600/20 text-emerald-300':'bg-rose-700/20 text-rose-200']">
+              <span v-if="testResultType==='success'">✅</span><span v-else>❌</span>{{testResultMsg}}
+            </p>
+          </div>
+          <button @click="addRole" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">
+            + 添加角色
+          </button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div v-for="role in roles" :key="role.id"
+            class="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-600 transition-colors">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0"
+                :style="{background:role.color}">{{role.name[0]}}</div>
+              <div class="min-w-0">
+                <div class="font-semibold truncate">{{role.name}}</div>
+                <div class="text-xs text-gray-500 truncate">{{getModelName(role.providerId, role.modelId)}}</div>
+              </div>
+            </div>
+            <div class="text-xs text-gray-400 space-y-1 mb-3">
+              <div class="flex justify-between"><span>Provider</span><span class="text-gray-300">{{getProviderName(role.providerId)}}</span></div>
+              <div class="flex justify-between"><span>模型</span><span class="text-gray-300 truncate ml-2 max-w-[200px]">{{getModelName(role.providerId, role.modelId)}}</span></div>
+              <div class="flex justify-between"><span>温度</span><span class="text-gray-300">{{role.temperature}}</span></div>
+            </div>
+            <div class="text-xs text-gray-500 bg-gray-800/50 rounded-lg p-2 mb-3 line-clamp-2">{{role.prompt}}</div>
+            <div class="flex gap-2">
+              <button @click="editRole(role)" class="flex-1 text-xs py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors">✏️ 编辑</button>
+              <button @click="testRole(role)" :disabled="testingRoleId===role.id" :class="['text-xs py-1.5 px-3 rounded-lg transition-colors', testingRoleId===role.id ? 'bg-emerald-600/10 text-emerald-200 cursor-not-allowed' : 'bg-emerald-600/20 hover:bg-emerald-500/30 text-emerald-300']">🧪 测试</button>
+              <button @click="deleteRole(role.id)" class="text-xs py-1.5 px-3 bg-gray-800 hover:bg-rose-600/20 text-rose-400 rounded-lg transition-colors">🗑️</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: 规则配置 ===== -->
+    <section v-show="activeTab==='rules'" class="h-full overflow-y-auto p-6">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-xl font-bold mb-1">⚙️ 规则配置</h2>
+        <p class="text-gray-400 text-sm mb-6">选择预设方案或自定义博弈参数</p>
+        <!-- Presets -->
+        <div class="flex gap-3 mb-6">
+          <button v-for="p in rulePresets" :key="p.id" @click="applyPreset(p)"
+            :class="['flex-1 p-3 rounded-xl border text-left transition-all text-sm',
+              currentRuleSet.id===p.id?'border-indigo-500 bg-indigo-600/10':'border-gray-800 bg-gray-900 hover:border-gray-600']">
+            <div class="font-semibold mb-1">{{p.icon}} {{p.name}}</div>
+            <div class="text-xs text-gray-400">{{p.desc}}</div>
+          </button>
+        </div>
+        <!-- Parameters -->
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <label class="block"><span class="text-sm text-gray-400">总回合数</span>
+              <input type="number" v-model.number="currentRuleSet.rounds" min="1" max="20"
+                class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+            <label class="block"><span class="text-sm text-gray-400">代币上限</span>
+              <input type="number" v-model.number="currentRuleSet.contributionCap" min="1" max="100"
+                class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+            <label class="block"><span class="text-sm text-gray-400">公共池放大倍数</span>
+              <input type="number" v-model.number="currentRuleSet.multiplier" step="0.1" min="1"
+                class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+            <label class="block"><span class="text-sm text-gray-400">惩罚成本 / 罚值</span>
+              <div class="flex gap-2 mt-1">
+                <input type="number" v-model.number="currentRuleSet.punishCost" min="0"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none" placeholder="成本">
+                <input type="number" v-model.number="currentRuleSet.punishPenalty" min="0"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none" placeholder="罚值">
+              </div></label>
+            <label class="block"><span class="text-sm text-gray-400">违约罚值</span>
+              <input type="number" v-model.number="currentRuleSet.promisePenalty" min="0"
+                class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+          </div>
+          <div class="border-t border-gray-800 pt-4">
+            <div class="text-sm text-gray-400 mb-3">阶段开关</div>
+            <div class="flex flex-wrap gap-4">
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.enablePromise" class="accent-indigo-500"> 承诺阶段</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.enablePrivateChat" class="accent-indigo-500"> 私聊阶段</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.enablePublicChat" class="accent-indigo-500"> 公开讨论</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.enablePunish" class="accent-indigo-500"> 惩罚阶段</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.decisionVisible" class="accent-indigo-500"> 决策行为可见</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.punishVisible" class="accent-indigo-500"> 惩罚行为可见</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.scoreboardVisibleToAI" class="accent-indigo-500"> AI可见排行榜分数</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.manualAdjustPerRound" class="accent-indigo-500"> 每回合手动调整</label>
+            </div>
+            <div class="mt-3 text-xs text-gray-500">
+              说明：当“决策行为可见/惩罚行为可见”关闭时，该行为仅对行为发起者（及被惩罚者）可见，其他 AI 不可见。
+            </div>
+            <div v-if="currentRuleSet.manualAdjustPerRound" class="mt-3 flex flex-wrap gap-2">
+              <button @click="openRoundPlanModal" class="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-500/30 text-indigo-300 rounded-lg text-xs transition-colors">
+                🗓️ 配置所有回合规则
+              </button>
+              <button @click="clearRoundPlan" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">
+                清空回合计划
+              </button>
+              <span class="text-xs text-gray-500 flex items-center">
+                已预设：{{(roundRulePlan||[]).filter((x,i)=>i>0&&x).length}} / {{currentRuleSet.rounds}} 回合
+              </span>
+            </div>
+          </div>
+          <div class="bg-gray-800/50 rounded-lg p-3 text-xs text-gray-400">
+            <strong class="text-gray-300">收益公式：</strong>
+            ({{currentRuleSet.contributionCap}} - 投入) + (公共池总额 × {{currentRuleSet.multiplier}} ÷ 参与人数)
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: 游戏大厅 ===== -->
+    <section v-show="activeTab==='game'" class="h-full flex flex-col">
+      <!-- Control Bar -->
+      <div class="bg-gray-900 border-b border-gray-800 px-4 py-2 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-4">
+          <span class="text-sm font-semibold">
+            第 <span class="text-indigo-400">{{game.currentRound}}</span> / {{currentRuleSet.rounds}} 轮
+          </span>
+          <span v-if="game.status==='running'" class="text-xs px-2 py-0.5 rounded-full bg-indigo-600/20 text-indigo-300">
+            {{phaseLabel}}
+          </span>
+          <span v-if="game.processingAI" class="text-xs text-gray-400">
+            🤔 {{game.processingAI}} 思考中…
+          </span>
+          <span v-if="game.roundRule" class="text-xs text-gray-500">
+            决策{{game.roundRule.decisionVisible ? '公开' : '隐藏'}} · 惩罚{{game.roundRule.punishVisible ? '公开' : '隐藏'}}
+          </span>
+          <span v-if="invalidRoles.length" class="text-xs text-amber-400">
+            角色配置待修复：{{invalidRoles.length}} 个
+          </span>
+        </div>
+        <div class="flex gap-2">
+          <button v-if="game.status==='idle'" @click="startGame"
+            :disabled="!canStart"
+            :class="['px-4 py-1.5 rounded-lg text-sm font-medium transition-colors',
+              canStart?'bg-emerald-600 hover:bg-emerald-500':'bg-gray-700 text-gray-500 cursor-not-allowed']">
+            ▶️ 开始游戏
+          </button>
+          <button v-if="game.status==='running'" @click="pauseGame"
+            class="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 rounded-lg text-sm font-medium transition-colors">
+            ⏸️ 暂停
+          </button>
+          <button v-if="game.status==='paused'" @click="resumeGame"
+            class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors">
+            ▶️ 继续
+          </button>
+          <button v-if="game.status!=='idle'" @click="resetGame"
+            class="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors">
+            🔄 重置
+          </button>
+        </div>
+      </div>
+      <!-- Game Layout: 3 columns -->
+      <div class="flex-1 flex overflow-hidden">
+        <!-- Left: Participants -->
+        <div class="w-52 bg-gray-900/50 border-r border-gray-800 p-3 overflow-y-auto shrink-0">
+          <div class="text-xs text-gray-500 font-semibold mb-2 uppercase tracking-wider">参与者</div>
+          <div v-for="role in roles" :key="role.id"
+            class="flex items-center gap-2 p-2 rounded-lg mb-1 hover:bg-gray-800/50 transition-colors cursor-pointer"
+            @click="selectedAIView=role.id; activeTab='stats'">
+            <div class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+              :style="{background:role.color}">{{role.name[0]}}</div>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium truncate">{{role.name}}</div>
+              <div class="text-xs text-gray-500">{{getTotal(role.id)}} 分</div>
+            </div>
+            <div v-if="game.processingAI===role.name" class="flex gap-0.5">
+              <span class="typing-dot w-1 h-1 bg-indigo-400 rounded-full"></span>
+              <span class="typing-dot w-1 h-1 bg-indigo-400 rounded-full"></span>
+              <span class="typing-dot w-1 h-1 bg-indigo-400 rounded-full"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Center: Chat -->
+        <div class="flex-1 flex flex-col overflow-hidden">
+          <!-- Chat tabs -->
+          <div class="flex border-b border-gray-800 px-4 shrink-0">
+            <button @click="chatView='public'"
+              :class="['px-4 py-2 text-sm border-b-2 transition-colors',
+                chatView==='public'?'border-indigo-500 text-white':'border-transparent text-gray-500 hover:text-gray-300']">
+              📢 公共频道
+            </button>
+            <button @click="chatView='private'"
+              :class="['px-4 py-2 text-sm border-b-2 transition-colors',
+                chatView==='private'?'border-indigo-500 text-white':'border-transparent text-gray-500 hover:text-gray-300']">
+              🔒 私聊记录
+            </button>
+            <button @click="chatView='all'"
+              :class="['px-4 py-2 text-sm border-b-2 transition-colors',
+                chatView==='all'?'border-indigo-500 text-white':'border-transparent text-gray-500 hover:text-gray-300']">
+              📋 全部日志
+            </button>
+            <button @click="exportLogsMarkdown" class="ml-auto my-1 px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors">
+              ⬇️ 导出 Markdown
+            </button>
+          </div>
+          <!-- Messages -->
+          <div ref="chatContainer" class="flex-1 overflow-y-auto p-4 space-y-2 chat-area">
+            <div v-if="filteredMessages.length===0" class="text-center text-gray-600 text-sm mt-12">
+              {{game.status==='idle'?'点击"开始游戏"开始博弈实验 🚀':'暂无消息'}}
+            </div>
+            <div v-for="msg in filteredMessages" :key="msg.id" class="msg-enter">
+              <!-- System message -->
+              <div v-if="msg.type==='system'" class="text-center">
+                <span class="inline-block text-xs text-gray-500 bg-gray-800/50 rounded-full px-3 py-1">{{msg.content}}</span>
+              </div>
+              <!-- Score settle -->
+              <div v-else-if="msg.type==='score_settle'" class="bg-gray-800/30 rounded-lg p-3 text-xs text-gray-300">
+                <div class="font-semibold text-gray-200 mb-1">📊 第 {{msg.round}} 轮结算</div>
+                <div v-html="msg.content"></div>
+              </div>
+              <!-- Chat message -->
+              <div v-else class="flex gap-2" :class="{'opacity-70':msg.type==='promise'}">
+                <div class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5"
+                  :style="{background:getRoleColor(msg.actorId)}">{{getRoleName(msg.actorId)[0]}}</div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 mb-0.5">
+                    <span class="text-xs font-semibold" :style="{color:getRoleColor(msg.actorId)}">{{getRoleName(msg.actorId)}}</span>
+                    <span v-if="msg.type==='private_message'" class="text-xs text-pink-400">🔒 → {{getRoleName(msg.targetId)}}</span>
+                    <span v-if="msg.type==='promise'" class="text-xs text-amber-400">🤝 承诺</span>
+                    <span v-if="msg.type==='decision'" class="text-xs text-emerald-400">✅ 决策</span>
+                    <span v-if="msg.type==='punish'" class="text-xs text-rose-400">⚡ 惩罚<span v-if="msg.targetId"> → {{getRoleName(msg.targetId)}}</span></span>
+                    <span class="text-xs text-gray-600">R{{msg.round}}</span>
+                  </div>
+                  <div class="text-sm text-gray-300 whitespace-pre-wrap break-words">{{msg.content}}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Decisions & Scores -->
+        <div class="w-72 bg-gray-900/50 border-l border-gray-800 p-3 overflow-y-auto shrink-0">
+          <div class="text-xs text-gray-500 font-semibold mb-2 uppercase tracking-wider">本轮决策</div>
+          <div v-if="currentRoundDecisions.length===0" class="text-xs text-gray-600 mt-2">等待中…</div>
+          <div v-for="d in currentRoundDecisions" :key="d.roleId" class="flex items-center gap-2 p-2 bg-gray-800/30 rounded-lg mb-1.5">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+              :style="{background:getRoleColor(d.roleId)}">{{getRoleName(d.roleId)[0]}}</div>
+            <div class="flex-1 text-xs">
+              <div class="font-medium">{{getRoleName(d.roleId)}}</div>
+              <div class="text-gray-500">投入 <span class="text-indigo-300 font-bold">{{d.contribution}}</span> / {{(game.roundRule||currentRuleSet).contributionCap}}</div>
+            </div>
+          </div>
+          <!-- Round summary -->
+          <div v-if="currentRoundSummary" class="mt-3 bg-gray-800/50 rounded-lg p-3 text-xs space-y-1">
+            <div class="flex justify-between"><span class="text-gray-400">总投入</span><span class="text-white font-bold">{{currentRoundSummary.totalContrib}}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">公共池 (×{{(game.roundRule||currentRuleSet).multiplier}})</span><span class="text-white font-bold">{{currentRoundSummary.poolValue.toFixed(1)}}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">人均分成</span><span class="text-indigo-300 font-bold">{{currentRoundSummary.perPerson.toFixed(1)}}</span></div>
+          </div>
+          <!-- Score board -->
+          <div class="text-xs text-gray-500 font-semibold mt-4 mb-2 uppercase tracking-wider">累计排行</div>
+          <div v-for="(s,i) in scoreboard" :key="s.roleId" class="flex items-center gap-2 p-1.5 mb-0.5">
+            <span class="text-xs font-bold w-4" :class="i===0?'text-amber-400':i===1?'text-gray-300':i===2?'text-amber-700':'text-gray-600'">{{i+1}}</span>
+            <div class="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+              :style="{background:getRoleColor(s.roleId)}">{{getRoleName(s.roleId)[0]}}</div>
+            <span class="text-xs flex-1 truncate">{{getRoleName(s.roleId)}}</span>
+            <span class="text-xs font-bold text-white">{{s.total.toFixed(1)}}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: 统计分析 ===== -->
+    <section v-show="activeTab==='stats'" class="h-full overflow-y-auto p-6">
+      <div class="max-w-6xl mx-auto">
+        <h2 class="text-xl font-bold mb-4">📊 统计分析</h2>
+        <!-- Chart -->
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
+          <canvas ref="scoreChart" height="100"></canvas>
+        </div>
+        <!-- AI View selector -->
+        <div class="flex items-center gap-3 mb-4">
+          <span class="text-sm text-gray-400">切换 AI 视角：</span>
+          <button v-for="role in roles" :key="role.id" @click="selectAIView(role.id)"
+            :class="['px-3 py-1.5 rounded-lg text-xs font-medium transition-all border',
+              selectedAIView===role.id?'border-indigo-500 bg-indigo-600/10 text-white':'border-gray-700 text-gray-400 hover:border-gray-500']">
+            <span class="inline-block w-2 h-2 rounded-full mr-1" :style="{background:role.color}"></span>
+            {{role.name}}
+          </button>
+        </div>
+        <!-- AI Detail View -->
+        <div v-if="selectedAIView" class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <h3 class="font-semibold mb-3">{{getRoleName(selectedAIView)}} 的完整视角</h3>
+          <!-- AI View Tabs -->
+          <div class="flex border-b border-gray-800 mb-3">
+            <button @click="aiViewTab='history'" :class="['px-3 py-2 text-xs border-b-2 transition-colors', aiViewTab==='history'?'border-indigo-500 text-white':'border-transparent text-gray-500']">📋 消息记录</button>
+            <button @click="aiViewTab='context'" :class="['px-3 py-2 text-xs border-b-2 transition-colors', aiViewTab==='context'?'border-indigo-500 text-white':'border-transparent text-gray-500']">🔍 完整上下文 (LLM)</button>
+          </div>
+          
+          <!-- History Tab -->
+          <div v-show="aiViewTab==='history'">
+            <!-- Decision history -->
+            <div class="mb-4">
+              <div class="text-sm text-gray-400 mb-2 font-semibold">📋 每轮决策记录</div>
+              <table class="w-full text-xs">
+                <thead><tr class="text-gray-500 border-b border-gray-800">
+                  <th class="py-2 text-left">轮次</th><th class="text-left">投入</th><th class="text-left">承诺</th>
+                  <th class="text-left">违约</th><th class="text-left">惩罚</th><th class="text-left">本轮得分</th><th class="text-left">累计</th>
+                </tr></thead>
+                <tbody>
+                  <tr v-for="row in aiViewDecisions" :key="row.round" class="border-b border-gray-800/50">
+                    <td class="py-1.5">R{{row.round}}</td>
+                    <td>{{row.contribution}}</td>
+                    <td class="truncate max-w-[120px]">{{row.promise||'—'}}</td>
+                    <td><span :class="row.brokePromise?'text-rose-400':'text-gray-600'">{{row.brokePromise?'是':'—'}}</span></td>
+                    <td>{{row.punished||'—'}}</td>
+                    <td :class="row.delta>=0?'text-emerald-400':'text-rose-400'">{{row.delta>=0?'+':''}}{{row.delta.toFixed(1)}}</td>
+                    <td class="font-bold">{{row.total.toFixed(1)}}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- Communication log -->
+            <div>
+              <div class="text-sm text-gray-400 mb-2 font-semibold">💬 沟通记录 (该AI可见的)</div>
+              <div class="max-h-64 overflow-y-auto space-y-1.5">
+                <div v-for="msg in aiViewMessages" :key="msg.id" class="text-xs p-2 bg-gray-800/30 rounded-lg">
+                  <div class="flex items-center gap-2 mb-0.5">
+                    <span class="font-semibold" :style="{color:getRoleColor(msg.actorId)}">{{getRoleName(msg.actorId)}}</span>
+                    <span v-if="msg.type==='private_message'" class="text-pink-400">🔒→{{getRoleName(msg.targetId)}}</span>
+                    <span v-else-if="msg.type==='decision'" class="text-emerald-400">✅ 决策</span>
+                    <span v-else-if="msg.type==='punish'" class="text-rose-400">⚡ 惩罚<span v-if="msg.targetId">→{{getRoleName(msg.targetId)}}</span></span>
+                    <span v-else-if="msg.type==='promise'" class="text-amber-400">🤝 承诺</span>
+                    <span v-else class="text-gray-600">📢 公开</span>
+                    <span class="text-gray-600 ml-auto">R{{msg.round}}</span>
+                  </div>
+                  <div class="text-gray-300">{{msg.content}}</div>
+                </div>
+                <div v-if="aiViewMessages.length===0" class="text-gray-600 text-center py-4">暂无记录</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Full Context Tab (What LLM sees) -->
+          <div v-show="aiViewTab==='context'">
+            <div class="text-sm text-gray-400 mb-2 font-semibold">🔍 当前轮次发送给 LLM 的完整上下文</div>
+            <div class="text-xs text-gray-500 mb-2">以下是与实际发送给AI模型的系统提示词完全一致的内容：</div>
+            <pre class="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{{getAIViewFullContext(selectedAIView)}}</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB: 游戏历史 ===== -->
+    <section v-show="activeTab==='history'" class="h-full overflow-y-auto p-6">
+      <div class="max-w-6xl mx-auto">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-bold">📚 游戏历史</h2>
+          <button @click="loadGameHistoryList" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">🔄 刷新列表</button>
+        </div>
+        <div v-if="gameHistory.length===0" class="text-center text-gray-500 py-12">
+          <div class="text-4xl mb-2">📭</div>
+          <p>暂无游戏历史记录</p>
+          <p class="text-xs mt-2">完成一局游戏后会自动保存</p>
+        </div>
+        <div v-else class="space-y-3">
+          <div v-for="game in gameHistory" :key="game.id" class="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <div class="font-medium text-sm">{{new Date(game.timestamp).toLocaleString()}}</div>
+              <div class="text-xs text-gray-500 mt-1">
+                {{game.roleCount}} 位角色 · {{game.rounds}} 轮 · ID: {{game.id.slice(0, 16)}}...
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button @click="viewHistoryGame(game.id)" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">👁️ 查看</button>
+              <button @click="deleteHistoryGame(game.id)" class="px-3 py-1.5 bg-rose-900/30 hover:bg-rose-900/50 text-rose-400 rounded-lg text-xs transition-colors">🗑️ 删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========== GAME HISTORY VIEW MODAL ========== -->
+  <div v-if="showHistoryModal && viewingHistoryGame" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="closeHistoryModal">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-4xl max-h-[85vh] overflow-y-auto p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold">📜 历史游戏详情</h3>
+        <button @click="closeHistoryModal" class="text-gray-500 hover:text-white text-xl">&times;</button>
+      </div>
+      <div class="text-sm text-gray-400 mb-4">
+        时间: {{new Date(viewingHistoryGame.timestamp).toLocaleString()}} · 
+        {{viewingHistoryGame.roles.length}} 位角色 · {{viewingHistoryGame.ruleSet.rounds}} 轮
+      </div>
+      <div class="flex gap-2 mb-4">
+        <button @click="loadHistoryGameIntoApp(viewingHistoryGame)" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">📂 加载到游戏大厅查看</button>
+        <button @click="closeHistoryModal" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors">关闭</button>
+      </div>
+      <!-- Final Scores -->
+      <div class="mb-4">
+        <h4 class="font-semibold mb-2 text-sm">🏆 最终得分</h4>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+          <div v-for="role in viewingHistoryGame.roles" :key="role.id" class="bg-gray-800/50 rounded-lg p-2 text-sm flex items-center gap-2">
+            <div class="w-3 h-3 rounded-full" :style="{background: role.color}"></div>
+            <span class="flex-1">{{role.name}}</span>
+            <span class="font-bold">{{(viewingHistoryGame.finalScores[role.id] || 0).toFixed(1)}}</span>
+          </div>
+        </div>
+      </div>
+      <!-- Messages Preview -->
+      <div>
+        <h4 class="font-semibold mb-2 text-sm">💬 游戏记录预览 (前20条)</h4>
+        <div class="max-h-64 overflow-y-auto space-y-1.5 bg-gray-950 rounded-lg p-3">
+          <div v-for="msg in viewingHistoryGame.messages.slice(0, 20)" :key="msg.id" class="text-xs p-2 bg-gray-800/30 rounded">
+            <span class="text-gray-500">[R{{msg.round}}]</span>
+            <span v-if="msg.type==='system'" class="text-gray-400">{{msg.content}}</span>
+            <span v-else-if="msg.type==='monologue'" class="text-purple-400">🧠 {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else-if="msg.type==='promise'" class="text-amber-400">🤝 {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else-if="msg.type==='decision'" class="text-emerald-400">✅ {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else-if="msg.type==='punish'" class="text-rose-400">⚡ {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else-if="msg.type==='public_message'" class="text-blue-400">📢 {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else-if="msg.type==='private_message'" class="text-pink-400">🔒 {{viewingHistoryGame.roles.find(r=>r.id===msg.actorId)?.name}} → {{viewingHistoryGame.roles.find(r=>r.id===msg.targetId)?.name}}: {{msg.rawContent || msg.content}}</span>
+            <span v-else class="text-gray-300">{{msg.rawContent || msg.content}}</span>
+          </div>
+          <div v-if="viewingHistoryGame.messages.length > 20" class="text-center text-xs text-gray-500 py-2">
+            ... 还有 {{viewingHistoryGame.messages.length - 20}} 条记录，加载到游戏大厅查看完整记录 ...
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== GAME INSTRUCTIONS MODAL ========== -->
+  <div v-if="showInstructions" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="showInstructions=false">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
+      <h3 class="text-lg font-bold mb-4">📖 AI 合作与博弈游戏 — 说明</h3>
+      <div class="text-sm text-gray-300 space-y-4">
+        <section>
+          <h4 class="font-semibold text-white mb-1">🎯 游戏背景</h4>
+          <p>这是一个基于「公共物品博弈」(Public Goods Game) 的 AI 行为实验平台。多个 AI 角色在多轮博弈中做出贡献决策，观察合作、背叛、惩罚等行为如何影响最终收益。</p>
+        </section>
+        <section>
+          <h4 class="font-semibold text-white mb-1">📋 游戏规则</h4>
+          <ul class="list-disc list-inside space-y-1 text-gray-400">
+            <li>每轮每位玩家有 <b class="text-white">{{currentRuleSet.contributionCap}}</b> 个代币</li>
+            <li>玩家选择投入 0~{{currentRuleSet.contributionCap}} 代币到公共池</li>
+            <li>公共池总额 × <b class="text-white">{{currentRuleSet.multiplier}}</b> 后平均分给所有玩家</li>
+            <li>收益 = 保留代币 + 公共池分成</li>
+            <li v-if="currentRuleSet.enablePunish">可花费 {{currentRuleSet.punishCost}} 代币惩罚某人，对方扣 {{currentRuleSet.punishPenalty}}</li>
+          </ul>
+        </section>
+        <section>
+          <h4 class="font-semibold text-white mb-1">🔄 游戏阶段</h4>
+          <ol class="list-decimal list-inside space-y-1 text-gray-400">
+            <li v-if="currentRuleSet.enablePromise"><b class="text-white">承诺阶段</b>：AI 公开声明本轮打算投入多少</li>
+            <li v-if="currentRuleSet.enablePrivateChat"><b class="text-white">私聊阶段</b>：AI 之间可以私下沟通</li>
+            <li v-if="currentRuleSet.enablePublicChat"><b class="text-white">公开讨论</b>：AI 在公共频道发言</li>
+            <li><b class="text-white">决策阶段</b>：AI 提交最终投入金额</li>
+            <li v-if="currentRuleSet.enablePunish"><b class="text-white">惩罚阶段</b>：AI 可选择惩罚背叛者</li>
+            <li><b class="text-white">结算</b>：计算本轮收益并累计</li>
+          </ol>
+        </section>
+        <section>
+          <h4 class="font-semibold text-white mb-1">🤖 角色人设</h4>
+          <p class="text-gray-400">每个 AI 角色有独特的人设提示词（Prompt），决定其行为风格。例如理性分析师会计算最优策略，情感型角色可能更倾向合作或报复。</p>
+        </section>
+        <section>
+          <h4 class="font-semibold text-white mb-1">⚙️ 后端配置</h4>
+          <p class="text-gray-400">API Key 保存在后端 <code class="bg-gray-800 px-1 rounded">server/data/apikeys.json</code>，前端只需选择模型和人设。请确保后端服务已启动并配置好各 Provider 的 Key。</p>
+        </section>
+      </div>
+      <div class="flex justify-end mt-5">
+        <button @click="showInstructions=false" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== ROLE EDIT MODAL ========== -->
+  <div v-if="showRoleModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="showRoleModal=false">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg p-6 shadow-2xl">
+      <h3 class="text-lg font-bold mb-4">{{editingRole.id?'编辑':'添加'}}角色</h3>
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-gray-400">角色名 *</span>
+            <input v-model="editingRole.name" class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+          <label class="block"><span class="text-xs text-gray-400">标识颜色</span>
+            <input type="color" v-model="editingRole.color" class="w-full mt-1 h-9 bg-gray-800 border border-gray-700 rounded-lg cursor-pointer"></label>
+        </div>
+        <label class="block"><span class="text-xs text-gray-400">人设提示词 (System Prompt)</span>
+          <div class="grid grid-cols-3 gap-2 mt-1 mb-2">
+            <select v-model="selectedPersonaStyle" class="col-span-2 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:border-indigo-500 outline-none">
+              <option v-for="s in personaStyles" :key="s.key" :value="s.key">{{s.label}}</option>
+            </select>
+            <button @click="applyPersonaStyle" class="text-xs bg-gray-800 hover:bg-gray-700 rounded-lg px-2 py-1.5">应用风格</button>
+          </div>
+          <div class="flex gap-2 mb-2">
+            <input v-model="promptKeyword" placeholder="输入关键词，如：善良、奸诈、精明..."
+              class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:border-indigo-500 outline-none">
+            <button @click="expandPromptByKeyword" :disabled="promptExpanding"
+              :class="['text-xs rounded-lg px-2 py-1.5', promptExpanding ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 text-white']">
+              {{promptExpanding ? '补全中...' : 'AI补全'}}
+            </button>
+          </div>
+          <div v-if="promptExpandError" class="text-xs text-rose-400 mb-2">{{promptExpandError}}</div>
+          <textarea v-model="editingRole.prompt" rows="3"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none resize-none"></textarea></label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-gray-400">Provider</span>
+            <select v-model="editingRole.providerId" @change="editingRole.modelId=(providers.find(p=>p.id===editingRole.providerId)?.models?.[0]?.id)||editingRole.modelId" class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none">
+              <option v-for="p in providers" :key="p.id" :value="p.id">{{p.name}}</option>
+            </select></label>
+          <label class="block"><span class="text-xs text-gray-400">模型</span>
+            <select v-model="editingRole.modelId" class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none">
+              <option v-for="m in (providers.find(p=>p.id===editingRole.providerId)?.models||[])" :key="m.id" :value="m.id">{{m.name}}</option>
+            </select></label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-gray-400">温度 (Temperature)</span>
+            <input type="number" v-model.number="editingRole.temperature" step="0.1" min="0" max="2"
+              class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
+          <div class="flex items-end">
+            <p class="text-xs text-gray-500">温度越高，AI 回复越随机；越低越确定</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="showRoleModal=false" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors">取消</button>
+        <button @click="saveRole" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== ROUND RULE MODAL ========== -->
+  <div v-if="showRoundRuleModal && roundRuleDraft" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-xl p-6 shadow-2xl">
+      <h3 class="text-lg font-bold mb-4">🔧 本回合规则确认</h3>
+      <p class="text-xs text-gray-500 mb-3">已开启“每回合手动调整”，请确认本回合参数：</p>
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.enablePromise" class="accent-indigo-500"> 承诺阶段
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.enablePrivateChat" class="accent-indigo-500"> 私聊阶段
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.enablePublicChat" class="accent-indigo-500"> 公开讨论
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.enablePunish" class="accent-indigo-500"> 惩罚阶段
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.decisionVisible" class="accent-indigo-500"> 决策行为可见
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.punishVisible" class="accent-indigo-500"> 惩罚行为可见
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" v-model="roundRuleDraft.scoreboardVisibleToAI" class="accent-indigo-500"> AI可见排行榜分数
+        </label>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mt-4">
+        <label class="block"><span class="text-xs text-gray-400">代币上限</span>
+          <input type="number" v-model.number="roundRuleDraft.contributionCap" min="1"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:border-indigo-500 outline-none"></label>
+        <label class="block"><span class="text-xs text-gray-400">公共池倍数</span>
+          <input type="number" v-model.number="roundRuleDraft.multiplier" step="0.1" min="1"
+            class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:border-indigo-500 outline-none"></label>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="useCurrentRuleDirectly" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm">使用全局配置</button>
+        <button @click="confirmRoundRule" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium">确认本回合规则</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== ROUND PLAN MODAL ========== -->
+  <div v-if="showRoundPlanModal && roundRulePlanDraft" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl p-6 shadow-2xl max-h-[85vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-lg font-bold">🗓️ 配置所有回合规则</h3>
+        <span class="text-xs text-gray-500">共 {{currentRuleSet.rounds}} 回合</span>
+      </div>
+      <p class="text-xs text-gray-500 mb-4">保存后，每回合将直接使用对应预设规则；未预设的回合仍会弹出确认窗口。</p>
+
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button @click="applyGlobalToAllRoundsInDraft" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">用全局规则覆盖所有回合</button>
+        <button @click="clearRoundPlanDraft" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs transition-colors">清空回合计划</button>
+      </div>
+
+      <div class="space-y-3">
+        <div v-for="r in currentRuleSet.rounds" :key="r" class="bg-gray-800/40 border border-gray-800 rounded-xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-sm font-semibold">第 {{r}} 回合</div>
+            <div class="text-xs text-gray-500">
+              决策{{roundRulePlanDraft[r].decisionVisible ? '公开' : '隐藏'}} · 惩罚{{roundRulePlanDraft[r].punishVisible ? '公开' : '隐藏'}}
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].enablePromise" class="accent-indigo-500"> 承诺
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].enablePrivateChat" class="accent-indigo-500"> 私聊
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].enablePublicChat" class="accent-indigo-500"> 公开讨论
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].enablePunish" class="accent-indigo-500"> 惩罚
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].decisionVisible" class="accent-indigo-500"> 决策可见
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].punishVisible" class="accent-indigo-500"> 惩罚可见
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="roundRulePlanDraft[r].scoreboardVisibleToAI" class="accent-indigo-500"> AI可见分数
+            </label>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 mt-3">
+            <label class="block"><span class="text-xs text-gray-400">代币上限</span>
+              <input type="number" v-model.number="roundRulePlanDraft[r].contributionCap" min="1"
+                class="w-full mt-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:border-indigo-500 outline-none"></label>
+            <label class="block"><span class="text-xs text-gray-400">公共池倍数</span>
+              <input type="number" v-model.number="roundRulePlanDraft[r].multiplier" step="0.1" min="1"
+                class="w-full mt-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:border-indigo-500 outline-none"></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-5">
+        <button @click="cancelRoundPlan" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors">取消</button>
+        <button @click="saveRoundPlan" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">保存回合计划</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== CONFIRM DIALOG ========== -->
+  <div v-if="confirmDialog" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-sm shadow-2xl">
+      <p class="text-sm mb-4">{{confirmDialog.message}}</p>
+      <div class="flex justify-end gap-2">
+        <button @click="confirmDialog=null" class="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm">取消</button>
+        <button @click="confirmDialog.action(); confirmDialog=null" class="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 rounded-lg text-sm font-medium">确认</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
