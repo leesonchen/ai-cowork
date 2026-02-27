@@ -13,7 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 3100;
 
 app.use(cors());
-app.use(express.json());
+// Allow larger JSON payloads (game history snapshots can be several MB)
+app.use(express.json({ limit: '100mb' }));
 
 // ───── Game History Persistence ─────
 const GAME_HISTORY_DIR = path.join(__dirname, '..', 'data', 'history');
