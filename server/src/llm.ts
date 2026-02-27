@@ -7,6 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '../data');
 const LOG_DIR = join(__dirname, '../logs');
 const LLM_AUDIT_LOG_FILE = join(LOG_DIR, 'llm_audit.jsonl');
+const LLM_RETRY_TIMES = 2;
+const LLM_RETRY_DELAY_MS = 10_000;
 
 let providersCache: ProvidersConfig | null = null;
 let apiKeysCache: ApiKeysConfig | null = null;
@@ -39,6 +41,10 @@ function writeAuditLogLine(obj: any) {
 
 function genRequestId() {
   return 'llm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export function loadProviders(): ProvidersConfig {
@@ -152,98 +158,120 @@ export async function callLLM(req: LLMRequest): Promise<LLMResponse> {
     messageCount: req.messages.length
   });
 
-  try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (isAnthropic) {
-      headers['x-api-key'] = apiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    } else {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (isAnthropic) {
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+  } else {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
+  let lastError = 'LLM call failed';
+  for (let attempt = 1; attempt <= LLM_RETRY_TIMES + 1; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
 
-    console.debug('[LLM][response][status]', { requestId, status: res.status, ms: Date.now() - start });
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      console.error('[LLM][error]', { requestId, status: res.status, body: text.slice(0, 200) });
-      return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
-    }
+      console.debug('[LLM][response][status]', { requestId, status: res.status, attempt, ms: Date.now() - start });
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText);
+        lastError = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+        console.error('[LLM][error]', { requestId, status: res.status, attempt, body: text.slice(0, 200) });
+        if (attempt <= LLM_RETRY_TIMES) {
+          console.warn('[LLM][retry][scheduled]', { requestId, attempt, nextAttempt: attempt + 1, waitMs: LLM_RETRY_DELAY_MS, reason: lastError });
+          await sleep(LLM_RETRY_DELAY_MS);
+          continue;
+        }
+      } else {
+        const data = await res.json();
 
-    const data = await res.json();
+        let content = '';
+        let usage;
+        if (isAnthropic) {
+          const arr = Array.isArray(data.content) ? data.content : [];
+          const textItem = arr.find((c: any) => c && typeof c.text === 'string');
+          content = textItem?.text || data.output_text || '';
+          usage = data.usage ? {
+            promptTokens: data.usage.input_tokens,
+            completionTokens: data.usage.output_tokens,
+            totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
+          } : undefined;
+        } else {
+          const choice = data.choices?.[0];
+          content = choice?.message?.content || choice?.content || '';
+          usage = data.usage ? {
+            promptTokens: data.usage.prompt_tokens,
+            completionTokens: data.usage.completion_tokens,
+            totalTokens: data.usage.total_tokens
+          } : undefined;
+        }
 
-    let content = '';
-    let usage;
-    if (isAnthropic) {
-      const arr = Array.isArray(data.content) ? data.content : [];
-      const textItem = arr.find((c: any) => c && typeof c.text === 'string');
-      content = textItem?.text || data.output_text || '';
-      usage = data.usage ? {
-        promptTokens: data.usage.input_tokens,
-        completionTokens: data.usage.output_tokens,
-        totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
-      } : undefined;
-    } else {
-      const choice = data.choices?.[0];
-      content = choice?.message?.content || choice?.content || '';
-      usage = data.usage ? {
-        promptTokens: data.usage.prompt_tokens,
-        completionTokens: data.usage.completion_tokens,
-        totalTokens: data.usage.total_tokens
-      } : undefined;
-    }
+        const respMs = Date.now() - start;
+        const logPayload: any = {
+          requestId,
+          model: req.modelId,
+          provider: provider.id,
+          hasContent: !!content,
+          usage,
+          attempt,
+          ms: respMs
+        };
 
-    const respMs = Date.now() - start;
-    const logPayload: any = {
-      requestId,
-      model: req.modelId,
-      provider: provider.id,
-      hasContent: !!content,
-      usage,
-      ms: respMs
-    };
+        if (!content) {
+          // 附加简短截断调试，方便定位 content 路径
+          try {
+            logPayload.sample = JSON.stringify(data).slice(0, 400);
+          } catch (_) {
+            logPayload.sample = '[unserializable]';
+          }
+        }
 
-    if (!content) {
-      // 附加简短截断调试，方便定位 content 路径
-      try {
-        logPayload.sample = JSON.stringify(data).slice(0, 400);
-      } catch (_) {
-        logPayload.sample = '[unserializable]';
+        console.debug('[LLM][response]', logPayload);
+        writeAuditLogLine({
+          ts: new Date().toISOString(),
+          type: 'llm_response',
+          requestId,
+          providerId: provider.id,
+          modelId: req.modelId,
+          meta: req.meta,
+          ok: true,
+          attempt,
+          retriesUsed: attempt - 1,
+          ms: respMs,
+          hasContent: !!content,
+          contentChars: (content || '').length,
+          usage
+        });
+        return { success: true, content, usage };
+      }
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+      console.error('[LLM][exception]', { requestId, message: err?.message, stack: err?.stack, attempt, ms: Date.now() - start });
+      if (attempt <= LLM_RETRY_TIMES) {
+        console.warn('[LLM][retry][scheduled]', { requestId, attempt, nextAttempt: attempt + 1, waitMs: LLM_RETRY_DELAY_MS, reason: lastError });
+        await sleep(LLM_RETRY_DELAY_MS);
+        continue;
       }
     }
 
-    console.debug('[LLM][response]', logPayload);
-    writeAuditLogLine({
-      ts: new Date().toISOString(),
-      type: 'llm_response',
-      requestId,
-      providerId: provider.id,
-      modelId: req.modelId,
-      meta: req.meta,
-      ok: true,
-      ms: respMs,
-      hasContent: !!content,
-      contentChars: (content || '').length,
-      usage
-    });
-    return { success: true, content, usage };
-  } catch (err: any) {
-    console.error('[LLM][exception]', { requestId, message: err.message, stack: err.stack, ms: Date.now() - start });
-    writeAuditLogLine({
-      ts: new Date().toISOString(),
-      type: 'llm_response',
-      requestId,
-      providerId: provider.id,
-      modelId: req.modelId,
-      meta: req.meta,
-      ok: false,
-      ms: Date.now() - start,
-      error: safeTruncate(err.message || String(err), 400)
-    });
-    return { success: false, error: err.message };
+    break;
   }
+
+  writeAuditLogLine({
+    ts: new Date().toISOString(),
+    type: 'llm_response',
+    requestId,
+    providerId: provider.id,
+    modelId: req.modelId,
+    meta: req.meta,
+    ok: false,
+    attempts: LLM_RETRY_TIMES + 1,
+    retriesUsed: LLM_RETRY_TIMES,
+    ms: Date.now() - start,
+    error: safeTruncate(lastError, 400)
+  });
+  return { success: false, error: lastError };
 }

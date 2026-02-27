@@ -1087,16 +1087,30 @@ createApp({
     },
 
     async askAI(role, round, phase, extra) {
-      const sys = this.buildSysPrompt(role, round);
-      const usr = this.buildPhasePrompt(role, round, phase, extra);
-      console.debug('[AI][call]', { role: role.name, phase, round, provider: role.providerId, model: role.modelId });
-      try {
-        return await callLLMBackend(role, sys, usr, { roleId: role.id, roleName: role.name, phase, round });
-      } catch(err) {
-        console.error('[AI][call][fatal]', { role: role.name, phase, error: err.message });
-        this.addMsg('system', null, null, round, `❌ ${role.name} 调用失败：${err.message}，游戏已暂停，请修复后重试`);
-        this.game.status = 'paused';
-        throw err;
+      const roleId = role.id;
+      let pausedByFailure = false;
+      while (true) {
+        await this.checkContinue();
+        const liveRole = this.roles.find(r => r.id === roleId);
+        if (!liveRole) throw new Error(`ROLE_NOT_FOUND:${roleId}`);
+
+        this.game.processingAI = liveRole.name;
+        const sys = this.buildSysPrompt(liveRole, round);
+        const usr = this.buildPhasePrompt(liveRole, round, phase, extra);
+        console.debug('[AI][call]', { role: liveRole.name, phase, round, provider: liveRole.providerId, model: liveRole.modelId });
+        try {
+          return await callLLMBackend(liveRole, sys, usr, { roleId: liveRole.id, roleName: liveRole.name, phase, round });
+        } catch(err) {
+          console.error('[AI][call][fatal]', { role: liveRole.name, phase, error: err.message });
+          if (!pausedByFailure) {
+            this.addMsg('system', null, null, round, `❌ ${liveRole.name} 调用失败：${err.message}。游戏已暂停；你可修改角色/Provider配置后点击“继续”重试当前步骤。`);
+            pausedByFailure = true;
+          } else {
+            this.addMsg('system', null, null, round, `❌ ${liveRole.name} 重试仍失败：${err.message}。请继续调整配置后再点“继续”。`);
+          }
+          this.game.processingAI = null;
+          this.game.status = 'paused';
+        }
       }
     },
 
