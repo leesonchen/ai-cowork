@@ -67,6 +67,7 @@ export interface GameRuleSet {
   multiplier: number;
   punishCost: number;
   punishPenalty: number;
+  punishOnlyBreaker?: boolean;
   enablePromise: boolean;
   enablePrivateChat: boolean;
   enablePublicChat: boolean;
@@ -108,6 +109,7 @@ export interface GameRecord {
   ruleSet: GameRuleSet;
   messages: GameMessage[];
   decisions: GameDecision[];
+  promises?: Array<{ roleId: string; round: number; amount: number; source?: string; updatedAt?: string }>;
   scoreHistory: GameScoreHistory[];
   finalScores: Record<string, number>;
 }

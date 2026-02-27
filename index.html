@@ -126,9 +126,6 @@
                 <input type="number" v-model.number="currentRuleSet.punishPenalty" min="0"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none" placeholder="罚值">
               </div></label>
-            <label class="block"><span class="text-sm text-gray-400">违约罚值</span>
-              <input type="number" v-model.number="currentRuleSet.promisePenalty" min="0"
-                class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-indigo-500 outline-none"></label>
           </div>
           <div class="border-t border-gray-800 pt-4">
             <div class="text-sm text-gray-400 mb-3">阶段开关</div>
@@ -146,12 +143,14 @@
               <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" v-model="currentRuleSet.punishVisible" class="accent-indigo-500"> 惩罚行为可见</label>
               <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" v-model="currentRuleSet.punishOnlyBreaker" class="accent-indigo-500"> 只惩罚违约</label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" v-model="currentRuleSet.scoreboardVisibleToAI" class="accent-indigo-500"> AI可见排行榜分数</label>
               <label class="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" v-model="currentRuleSet.manualAdjustPerRound" class="accent-indigo-500"> 每回合手动调整</label>
             </div>
             <div class="mt-3 text-xs text-gray-500">
-              说明：当“决策行为可见/惩罚行为可见”关闭时，该行为仅对行为发起者（及被惩罚者）可见，其他 AI 不可见。
+              说明：当"决策行为可见/惩罚行为可见"关闭时，该行为仅对行为发起者（及被惩罚者）可见，其他 AI 不可见。启用"只惩罚违约"时，惩罚仅对实际投入低于其承诺的人生效；误判时惩罚失效但惩罚者仍需支付成本。
             </div>
             <div v-if="currentRuleSet.manualAdjustPerRound" class="mt-3 flex flex-wrap gap-2">
               <button @click="openRoundPlanModal" class="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-500/30 text-indigo-300 rounded-lg text-xs transition-colors">
@@ -297,6 +296,20 @@
 
         <!-- Right: Decisions & Scores -->
         <div class="w-72 bg-gray-900/50 border-l border-gray-800 p-3 overflow-y-auto shrink-0">
+          <div v-if="(game.roundRule||currentRuleSet).enablePromise" class="mb-4">
+            <div class="text-xs text-gray-500 font-semibold mb-2 uppercase tracking-wider">本轮承诺</div>
+            <div v-if="currentRoundPromises.length===0" class="text-xs text-gray-600 mt-2">等待中…</div>
+            <div v-for="role in roles" :key="role.id" class="flex items-center gap-2 p-2 bg-gray-800/30 rounded-lg mb-1.5">
+              <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                :style="{background:getRoleColor(role.id)}">{{getRoleName(role.id)[0]}}</div>
+              <div class="flex-1 text-xs">
+                <div class="font-medium">{{getRoleName(role.id)}}</div>
+                <div class="text-gray-500">
+                  承诺 <span class="text-amber-300 font-bold">{{(currentRoundPromises.find(p=>p.roleId===role.id)?.amount ?? '—')}}</span> / {{(game.roundRule||currentRuleSet).contributionCap}}
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="text-xs text-gray-500 font-semibold mb-2 uppercase tracking-wider">本轮决策</div>
           <div v-if="currentRoundDecisions.length===0" class="text-xs text-gray-600 mt-2">等待中…</div>
           <div v-for="d in currentRoundDecisions" :key="d.roleId" class="flex items-center gap-2 p-2 bg-gray-800/30 rounded-lg mb-1.5">
@@ -398,10 +411,34 @@
           </div>
           
           <!-- Full Context Tab (What LLM sees) -->
-          <div v-show="aiViewTab==='context'">
-            <div class="text-sm text-gray-400 mb-2 font-semibold">🔍 当前轮次发送给 LLM 的完整上下文</div>
-            <div class="text-xs text-gray-500 mb-2">以下是与实际发送给AI模型的系统提示词完全一致的内容：</div>
-            <pre class="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{{getAIViewFullContext(selectedAIView)}}</pre>
+          <div v-show="aiViewTab==='context'" class="space-y-3">
+            <div>
+              <div class="text-sm text-gray-400 mb-1 font-semibold">🔍 当前轮次上下文</div>
+              <div class="text-xs text-gray-500 mb-2">与本轮发送给模型的系统提示词一致：</div>
+              <pre class="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{{formatContextBlock(aiViewContextLatest) || '暂无数据'}}</pre>
+            </div>
+            <div>
+              <div class="text-sm text-gray-400 mb-2 font-semibold flex items-center justify-between">
+                <span>🕘 历史上下文记录（全部轮次）</span>
+                <span class="text-xs text-gray-500">共 {{llmContextByRole[selectedAIView]?.length || 0}} 条</span>
+              </div>
+              <div v-if="aiViewContextEntries.length === 0" class="text-xs text-gray-500">暂无历史记录</div>
+              <div v-else class="space-y-2 max-h-80 overflow-y-auto">
+                <div v-for="entry in aiViewContextEntries" :key="entry.id" class="bg-gray-950/80 border border-gray-800 rounded-lg">
+                  <button class="w-full flex items-center justify-between text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-900/70"
+                    @click="toggleContextEntry(entry.id)">
+                    <div class="flex flex-col">
+                      <span class="font-semibold">第 {{entry.round}} 轮 · {{entry.phaseLabel}}</span>
+                      <span class="text-xs text-gray-500">{{formatTimestamp(entry.timestamp)}}</span>
+                    </div>
+                    <span class="text-xs text-gray-500">{{entry.isExpanded ? '收起' : '展开'}}</span>
+                  </button>
+                  <div v-show="entry.isExpanded" class="border-t border-gray-800">
+                    <pre class="p-3 text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed">{{formatContextBlock(entry)}}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

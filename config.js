@@ -41,9 +41,9 @@ const DEFAULT_ROLES = [
 ];
 
 const RULE_PRESETS = [
-  { id:'basic', icon:'🟢', name:'基础版', desc:'纯公共物品博弈，无惩罚无承诺', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, promisePenalty:3, enablePromise:false, enablePrivateChat:false, enablePublicChat:true, enablePunish:false, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true },
-  { id:'punish', icon:'🟡', name:'惩罚版', desc:'加入私聊+惩罚机制', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, promisePenalty:3, enablePromise:false, enablePrivateChat:true, enablePublicChat:true, enablePunish:true, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true },
-  { id:'full', icon:'🔴', name:'完整版', desc:'承诺+私聊+惩罚，完整社会困境', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, promisePenalty:3, enablePromise:true, enablePrivateChat:true, enablePublicChat:true, enablePunish:true, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true }
+  { id:'basic', icon:'🟢', name:'基础版', desc:'纯公共物品博弈，无惩罚无承诺', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, punishOnlyBreaker:true, enablePromise:false, enablePrivateChat:false, enablePublicChat:true, enablePunish:false, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true },
+  { id:'punish', icon:'🟡', name:'惩罚版', desc:'加入私聊+惩罚机制', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, punishOnlyBreaker:true, enablePromise:false, enablePrivateChat:true, enablePublicChat:true, enablePunish:true, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true },
+  { id:'full', icon:'🔴', name:'完整版', desc:'承诺+私聊+惩罚，完整社会困境', rounds:5, contributionCap:10, multiplier:1.5, punishCost:2, punishPenalty:5, punishOnlyBreaker:true, enablePromise:true, enablePrivateChat:true, enablePublicChat:true, enablePunish:true, decisionVisible:true, punishVisible:true, manualAdjustPerRound:false, scoreboardVisibleToAI:true }
 ];
 
 const PHASE_LABELS = { monologue:'🧠 内心独白', promise:'🤝 承诺阶段', privateChat:'🔒 私聊阶段', publicChat:'📢 公开讨论', decision:'✅ 决策阶段', punish:'⚡ 惩罚阶段', settle:'📊 结算中' };

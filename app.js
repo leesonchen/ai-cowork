@@ -56,6 +56,7 @@ createApp({
       showRoundPlanModal: false,
       editingRole: {}, confirmDialog: null,
       selectedAIView: null, aiViewTab: 'history', chartInstance: null,
+      llmContextLog: [], llmContextExpanded: {},
       roles: (Array.isArray(savedRoles) ? savedRoles : JSON.parse(JSON.stringify(DEFAULT_ROLES))).map(normalizeRole),
       currentRuleSet: normalizeRuleSet(loadLS('ai_game_rules', { ...RULE_PRESETS[0] })),
       roundRulePlan: [],
@@ -67,7 +68,7 @@ createApp({
       promptExpanding: false,
       promptExpandError: null,
       game: { status:'idle', currentRound:0, phase:'', processingAI:null, roundRule:null },
-      messages: [], decisions: [], scoreHistory: [], scoreTotals: {},
+      messages: [], decisions: [], promises: [], scoreHistory: [], scoreTotals: {},
       roundRuleHistory: {},
       roundRuleDraft: null,
       roundRuleResolver: null,
@@ -91,6 +92,17 @@ createApp({
         { key:'stats', icon:'📊', label:'统计分析' },
         { key:'history', icon:'📚', label:'游戏历史' }
       ];
+    },
+    llmContextByRole() {
+      const map = {};
+      for (const entry of this.llmContextLog) {
+        if (!map[entry.roleId]) map[entry.roleId] = [];
+        map[entry.roleId].push(entry);
+      }
+      for (const roleId in map) {
+        map[roleId].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      }
+      return map;
     },
     invalidRoles() {
       if (!this.roles.length) return [];
@@ -116,6 +128,9 @@ createApp({
     currentRoundDecisions() {
       return this.decisions.filter(d => d.round === this.game.currentRound);
     },
+    currentRoundPromises() {
+      return this.promises.filter(p => p.round === this.game.currentRound);
+    },
     currentRoundSummary() {
       const decs = this.currentRoundDecisions;
       if (!decs.length) return null;
@@ -134,12 +149,12 @@ createApp({
       for (let r = 1; r <= (this.game.currentRound || 0); r++) {
         const dec = this.decisions.find(d => d.round === r && d.roleId === this.selectedAIView);
         const sh = this.scoreHistory.find(s => s.round === r && s.roleId === this.selectedAIView);
-        const pr = this.messages.find(m => m.round === r && m.type === 'promise' && m.actorId === this.selectedAIView);
+        const pr = this.getPromiseForRound(this.selectedAIView, r);
         const pu = this.messages.find(m => m.round === r && m.type === 'punish' && m.actorId === this.selectedAIView);
         rows.push({
           round: r, contribution: dec ? dec.contribution : '—',
-          promise: pr ? pr.content : '',
-          brokePromise: pr && dec && dec.contribution <= this.getRuleForRound(r).contributionCap * 0.2,
+          promise: pr && typeof pr.amount === 'number' ? pr.amount : '',
+          brokePromise: pr && dec && typeof pr.amount === 'number' && dec.contribution < pr.amount,
           punished: pu ? (pu.targetId ? this.getRoleName(pu.targetId) : '（未惩罚）') : '',
           delta: sh ? sh.delta : 0, total: sh ? sh.total : 0
         });
@@ -161,6 +176,20 @@ createApp({
           content: this.getMsgContentForRole(role, m, this.getRuleForRound(m.round))
         }))
         .filter(m => !!m.content);
+    },
+    aiViewContextLatest() {
+      if (!this.selectedAIView) return null;
+      const list = this.llmContextByRole[this.selectedAIView] || [];
+      return list.length ? list[list.length - 1] : null;
+    },
+    aiViewContextEntries() {
+      if (!this.selectedAIView) return [];
+      const list = this.llmContextByRole[this.selectedAIView] || [];
+      return list.slice().reverse().map(entry => ({
+        ...entry,
+        phaseLabel: this.formatPhaseLabel(entry.phase),
+        isExpanded: !!this.llmContextExpanded[entry.id]
+      }));
     }
   },
 
@@ -369,6 +398,9 @@ createApp({
     getRoleName(id) { const r = this.roles.find(x => x.id === id); return r ? r.name : '系统'; },
     getRoleColor(id) { const r = this.roles.find(x => x.id === id); return r ? r.color : '#6B7280'; },
     getTotal(id) { return (this.scoreTotals[id] || 0).toFixed(1); },
+    getPromiseForRound(roleId, round) {
+      return this.promises.find(p => p.roleId === roleId && p.round === round);
+    },
     formatMonologue(input) {
       const raw = (input || '').trim();
       if (!raw) return '';
@@ -393,7 +425,7 @@ createApp({
     },
     formatRuleSummary(rr) {
       if (!rr) return '';
-      return `承诺:${rr.enablePromise ? '开' : '关'} 私聊:${rr.enablePrivateChat ? '开' : '关'} 公开:${rr.enablePublicChat ? '开' : '关'} 惩罚:${rr.enablePunish ? '开' : '关'} | 决策可见:${rr.decisionVisible ? '是' : '否'} 惩罚可见:${rr.punishVisible ? '是' : '否'} AI可见分数:${rr.scoreboardVisibleToAI ? '是' : '否'} | 上限:${rr.contributionCap} 倍数:${rr.multiplier}`;
+      return `承诺:${rr.enablePromise ? '开' : '关'} 私聊:${rr.enablePrivateChat ? '开' : '关'} 公开:${rr.enablePublicChat ? '开' : '关'} 惩罚:${rr.enablePunish ? '开' : '关'}${rr.enablePunish ? (rr.punishOnlyBreaker !== false ? '(仅限违约者)' : '(可任意惩罚)') : ''} | 决策可见:${rr.decisionVisible ? '是' : '否'} 惩罚可见:${rr.punishVisible ? '是' : '否'} AI可见分数:${rr.scoreboardVisibleToAI ? '是' : '否'} | 上限:${rr.contributionCap} 倍数:${rr.multiplier}`;
     },
     getMsgContentForRole(role, msg, roundRule) {
       // Principle: inner monologue is user-only; no AI should see any monologue.
@@ -416,9 +448,18 @@ createApp({
       let delta = 0;
       for (const e of events) {
         if (e.actorId === role.id && e.targetId) delta -= (rr.punishCost || 0);
-        if (e.targetId === role.id) delta -= (rr.punishPenalty || 0);
+        if (e.targetId === role.id && e.punishEffective !== false) delta -= (rr.punishPenalty || 0);
       }
       return delta;
+    },
+    isPunishBreacher(targetRole, round, roundRule) {
+      const rr = roundRule || this.currentRuleSet;
+      if (!rr.enablePromise) return true;
+      const promise = this.getPromiseForRound(targetRole.id, round);
+      if (!promise || typeof promise.amount !== 'number') return false;
+      const dec = this.decisions.find(d => d.round === round && d.roleId === targetRole.id);
+      if (!dec) return false;
+      return dec.contribution < promise.amount;
     },
     getRuleForRound(round) {
       return this.roundRuleHistory[round] || this.currentRuleSet;
@@ -669,10 +710,35 @@ createApp({
       a.remove();
       URL.revokeObjectURL(url);
     },
-    addMsg(type, actorId, targetId, round, content) {
+    addMsg(type, actorId, targetId, round, content, extra) {
       const sanitized = (type === 'system' || type === 'score_settle') ? content : this.stripThink(content);
-      this.messages.push({ id: uid(), type, actorId, targetId, round, content: sanitized, rawContent: content });
+      this.messages.push({ id: uid(), type, actorId, targetId, round, content: sanitized, rawContent: content, ...(extra || {}) });
       this.$nextTick(() => { const c = this.$refs.chatContainer; if (c) c.scrollTop = c.scrollHeight; });
+    },
+    formatPhaseLabel(phase) {
+      const label = PHASE_LABELS?.[phase] || phase;
+      return label;
+    },
+    formatTimestamp(ts) {
+      if (!ts) return '';
+      try {
+        const d = new Date(ts);
+        return d.toLocaleString();
+      } catch (_) {
+        return ts;
+      }
+    },
+    formatContextBlock(entry) {
+      if (!entry) return '';
+      const sys = entry.systemPrompt || '';
+      const phase = entry.phasePrompt || '';
+      return `=== System Prompt ===\n${sys}\n\n=== 阶段提示 ===\n${phase}`;
+    },
+    toggleContextEntry(id) {
+      this.llmContextExpanded = {
+        ...this.llmContextExpanded,
+        [id]: !this.llmContextExpanded[id]
+      };
     },
     selectAIView(id) { this.selectedAIView = id; this.$nextTick(() => this.renderChart()); },
 
@@ -696,13 +762,17 @@ createApp({
         this.showRoundRuleModal = false;
         this.roundRulePlanDraft = null;
         this.showRoundPlanModal = false;
-        this.messages = []; this.decisions = []; this.scoreHistory = []; this.scoreTotals = {};
+        this.messages = []; this.decisions = []; this.promises = []; this.scoreHistory = []; this.scoreTotals = {};
+        this.llmContextLog = [];
+        this.llmContextExpanded = {};
       }};
     },
 
     async startGame() {
       if (!this.canStart) return;
-      this.messages = []; this.decisions = []; this.scoreHistory = []; this.scoreTotals = {};
+      this.messages = []; this.decisions = []; this.promises = []; this.scoreHistory = []; this.scoreTotals = {};
+      this.llmContextLog = [];
+      this.llmContextExpanded = {};
       this.roundRuleHistory = {};
       this.roles.forEach(r => { this.scoreTotals[r.id] = 0; });
       this.game = { status:'running', currentRound:0, phase:'', processingAI:null, roundRule:null };
@@ -756,7 +826,18 @@ createApp({
           await this.checkContinue();
           this.game.processingAI = role.name;
           const resp = await this.askAI(role, round, 'promise');
-          this.addMsg('promise', role.id, null, round, resp);
+          const p = extractJSON(resp);
+          let amount = Math.floor(rs.contributionCap / 2);
+          if (p && typeof p.amount === 'number') {
+            amount = Math.max(0, Math.min(rs.contributionCap, Math.round(p.amount)));
+          } else {
+            const nm = resp.match(/\d+/);
+            if (nm) amount = Math.max(0, Math.min(rs.contributionCap, parseInt(nm[0])));
+          }
+          const reason = p && p.reason ? ` | ${p.reason}` : '';
+          const promiseText = `承诺投入 ${amount} 代币${reason}`;
+          this.promises.push({ roleId: role.id, round, amount, source: 'promise', updatedAt: new Date().toISOString() });
+          this.addMsg('promise', role.id, null, round, promiseText);
           this.game.processingAI = null; await sleep(200);
         }
       }
@@ -793,7 +874,21 @@ createApp({
           await this.checkContinue();
           this.game.processingAI = role.name;
           const resp = await this.askAI(role, round, 'publicChat');
-          this.addMsg('public_message', role.id, null, round, resp);
+          const p = extractJSON(resp);
+          const message = p && typeof p.message === 'string' ? p.message : resp;
+          this.addMsg('public_message', role.id, null, round, message);
+          if (p && typeof p.promiseAmount === 'number') {
+            const amount = Math.max(0, Math.min(rs.contributionCap, Math.round(p.promiseAmount)));
+            const existing = this.getPromiseForRound(role.id, round);
+            if (existing) {
+              existing.amount = amount;
+              existing.source = 'publicChat';
+              existing.updatedAt = new Date().toISOString();
+            } else {
+              this.promises.push({ roleId: role.id, round, amount, source: 'publicChat', updatedAt: new Date().toISOString() });
+            }
+            this.addMsg('promise', role.id, null, round, `更新承诺：投入 ${amount} 代币`);
+          }
           this.game.processingAI = null; await sleep(200);
         }
       }
@@ -839,10 +934,17 @@ createApp({
               const tgt = this.roles.find(r => r.name === p.target && r.id !== role.id);
               if (tgt) {
                 const monologue = this.formatMonologue(p.monologue || '');
-                const punishText = `${monologue ? `${monologue} | ` : ''}${p.reason || '惩罚'}`;
-                this.addMsg('punish', role.id, tgt.id, round, punishText);
+                let effective = true;
+                if (rs.punishOnlyBreaker !== false) {
+                  effective = this.isPunishBreacher(tgt, round, rs);
+                }
+                const statusLabel = effective ? '' : ' ⚠️[失效：对方未违约]';
+                const punishText = `${monologue ? `${monologue} | ` : ''}${p.reason || '惩罚'}${statusLabel}`;
+                this.addMsg('punish', role.id, tgt.id, round, punishText, { punishEffective: effective });
                 this.scoreTotals[role.id] = (this.scoreTotals[role.id]||0) - rs.punishCost;
-                this.scoreTotals[tgt.id] = (this.scoreTotals[tgt.id]||0) - rs.punishPenalty;
+                if (effective) {
+                  this.scoreTotals[tgt.id] = (this.scoreTotals[tgt.id]||0) - rs.punishPenalty;
+                }
               } else {
                 const monologue = this.formatMonologue((p && p.monologue) || '目标无效，暂不惩罚');
                 this.addMsg('punish', role.id, null, round, `${monologue} | 不惩罚`);
@@ -888,7 +990,13 @@ createApp({
       let s = `你是"${role.name}"。${role.prompt}\n\n`;
       s += `【${r.rounds}轮公共物品博弈·第${round}轮】\n`;
       s += `每人${r.contributionCap}代币，公共池×${r.multiplier}后均分给${n}人。收益=保留+分成。\n`;
-      if (r.enablePunish) s += `可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})。\n`;
+      if (r.enablePunish) {
+        if (r.punishOnlyBreaker !== false) {
+          s += `可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})，但只有当对方实际投入低于其承诺量时惩罚才生效；若对方未违约，惩罚失效（但你仍需支付${r.punishCost}代币成本）。\n`;
+        } else {
+          s += `可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})。\n`;
+        }
+      }
       if (r.enablePromise) s += `每轮可公开承诺(可守可破)。\n`;
 
       s += `\n【本轮规则（你必须遵守与利用）】\n`;
@@ -939,7 +1047,10 @@ createApp({
           else if (m.type === 'public_message') s += `[公开]${this.getRoleName(m.actorId)}：${content}\n`;
           else if (m.type === 'private_message') s += `[私聊]${this.getRoleName(m.actorId)}→${this.getRoleName(m.targetId)}：${content}\n`;
           else if (m.type === 'decision') s += `[决策]${this.getRoleName(m.actorId)}：${content}\n`;
-          else if (m.type === 'punish') s += `[惩罚]${this.getRoleName(m.actorId)}→${m.targetId ? this.getRoleName(m.targetId) : '（无目标）'}：${content}\n`;
+          else if (m.type === 'punish') {
+            const effectTag = m.targetId && m.punishEffective === false ? '（失效）' : '';
+            s += `[惩罚${effectTag}]${this.getRoleName(m.actorId)}→${m.targetId ? this.getRoleName(m.targetId) : '（无目标）'}：${content}\n`;
+          }
         }
       }
       s += '\n请用中文回复，保持简洁(100字以内)。';
@@ -951,14 +1062,23 @@ createApp({
       const others = this.roles.filter(x => x.id !== role.id).map(x => x.name).join('、');
       switch(phase) {
         case 'promise':
-          return `现在是【承诺阶段】。请向其他玩家(${others})公开表明你本轮打算投入多少代币。直接说即可，50字以内。`;
+          return `现在是【承诺阶段】。请向其他玩家(${others})公开表明你本轮打算投入多少代币。所有人都能看到你的承诺。\n必须严格按JSON回复：{"amount":数字,"reason":"简要理由"}。只输出JSON，不要其他内容。`;
         case 'privateChat':
           return `现在是【私聊阶段】。你可以给一位玩家发私信(${others})。请用JSON回复：{"sendTo":"玩家名","message":"内容"} 或 {"sendTo":null}。不要发给自己。`;
         case 'privateChatReply':
           return `${extra.from}给你发了私信："${extra.message}"\n请简洁回复(50字以内)，直接说话。`;
         case 'publicChat':
-          return `现在是【公开讨论】。请发表你对本轮策略的看法，可以回应其他人。100字以内，直接说话。`;
+          return `现在是【公开讨论】。请发表你对本轮策略的看法，可以回应其他人。你也可以选择更新自己的承诺投入。\n若要更新承诺，请在JSON中提供promiseAmount(数字)；否则不提供该字段。\n必须严格按JSON回复：{"message":"你的发言","promiseAmount":数字(可选)}。只输出JSON，不要其他内容。`;
         case 'decision': {
+          let promiseInfo = '';
+          if (r.enablePromise) {
+            const summary = this.roles.map(p => {
+              const pr = this.getPromiseForRound(p.id, round);
+              const amount = pr && typeof pr.amount === 'number' ? pr.amount : '—';
+              return `${this.getRoleName(p.id)}：${amount}`;
+            }).join('；');
+            promiseInfo = `【本轮承诺】${summary}`;
+          }
           // Add per-round settlement result as explicit input
           let settlementInfo = '';
           if (round > 1) {
@@ -972,7 +1092,8 @@ createApp({
               settlementInfo = `\n\n【上轮结算】第${prevRound}轮你投入${prevDec.contribution}代币，净收益${net >= 0 ? '+' : ''}${net.toFixed(1)}分。请将此作为本轮决策的重要参考。`;
             }
           }
-          return `请做出最终决策：投入多少代币(0~${r.contributionCap})到公共池？${settlementInfo}\n${r.decisionVisible ? '本轮决策对其他玩家可见。' : '本轮决策对其他玩家不可见，你可以与公开讨论不一致。'}\n必须严格按JSON回复：{"contribution":数字,"reason":"简要理由","monologue":"【你的内心独白】"}\n只输出JSON，不要其他内容。`;
+          const promiseInfoBlock = promiseInfo ? `${promiseInfo}\n` : '';
+          return `${promiseInfoBlock}请做出最终决策：投入多少代币(0~${r.contributionCap})到公共池？${settlementInfo}\n${r.decisionVisible ? '本轮决策对其他玩家可见。' : '本轮决策对其他玩家不可见，你可以与公开讨论不一致。'}\n必须严格按JSON回复：{"contribution":数字,"reason":"简要理由","monologue":"【你的内心独白】"}\n只输出JSON，不要其他内容。`;
         }
         case 'punish': {
           const rd = this.decisions.filter(d => d.round === round);
@@ -983,7 +1104,17 @@ createApp({
             const own = rd.find(d => d.roleId === role.id);
             info = own ? `你的投入是${own.contribution}，其他人投入不可见` : '本轮他人投入不可见';
           }
-          return `本轮投入情况：${info}\n你可以花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})，也可以不惩罚。${r.punishVisible ? '惩罚行为会被公开。' : '惩罚行为对其他玩家不可见。'}\nJSON回复：{"target":"玩家名","reason":"理由","monologue":"【你的内心独白】"} 或 {"target":null,"monologue":"【你的内心独白】"}`;
+          const promisesThisRound = this.messages.filter(m => m.round === round && m.type === 'promise' && this.canRoleSeeMessage(role, m, r));
+          let promiseInfo = '';
+          if (promisesThisRound.length) {
+            promiseInfo = '\n本轮承诺情况：' + promisesThisRound.map(m => `${this.getRoleName(m.actorId)}承诺：${m.content}`).join('；');
+          }
+          let punishRuleNote = '';
+          if (r.punishOnlyBreaker !== false) {
+            punishRuleNote = `\n⚠️【违约惩罚规则】本局启用"只惩罚违约"：仅当被惩罚者实际投入低于其承诺量时，惩罚才生效（对方扣${r.punishPenalty}分）。若对方未违约，惩罚将失效，但你仍需支付${r.punishCost}代币成本。请谨慎判断。`;
+          }
+          const visibilityNote = r.punishVisible ? '惩罚行为会被公开，惩罚成功/失效结果也会公开。' : '惩罚行为对其他玩家不可见。';
+          return `本轮投入情况：${info}${promiseInfo}\n你可以花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})，也可以不惩罚。${visibilityNote}${punishRuleNote}\nJSON回复：{"target":"玩家名","reason":"理由","monologue":"【你的内心独白】"} 或 {"target":null,"monologue":"【你的内心独白】"}`;
         }
         case 'monologue': {
           const prevRound = round - 1;
@@ -1016,7 +1147,13 @@ createApp({
       context.push('');
       context.push(`【${r.rounds}轮公共物品博弈·第${round}轮】`);
       context.push(`每人${r.contributionCap}代币，公共池×${r.multiplier}后均分给${n}人。收益=保留+分成。`);
-      if (r.enablePunish) context.push(`可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})。`);
+      if (r.enablePunish) {
+        if (r.punishOnlyBreaker !== false) {
+          context.push(`可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})，仅对违约者（实际投入 < 其承诺）生效；误判仍需付成本。`);
+        } else {
+          context.push(`可花${r.punishCost}代币惩罚某人(对方扣${r.punishPenalty})。`);
+        }
+      }
       if (r.enablePromise) context.push(`每轮可公开承诺(可守可破)。`);
       
       context.push('');
@@ -1079,7 +1216,10 @@ createApp({
           else if (m.type === 'public_message') context.push(`[公开]${this.getRoleName(m.actorId)}：${content}`);
           else if (m.type === 'private_message') context.push(`[私聊]${this.getRoleName(m.actorId)}→${this.getRoleName(m.targetId)}：${content}`);
           else if (m.type === 'decision') context.push(`[决策]${this.getRoleName(m.actorId)}：${content}`);
-          else if (m.type === 'punish') context.push(`[惩罚]${this.getRoleName(m.actorId)}→${m.targetId ? this.getRoleName(m.targetId) : '（无目标）'}：${content}`);
+          else if (m.type === 'punish') {
+            const effectTag = m.targetId && m.punishEffective === false ? '（失效）' : '';
+            context.push(`[惩罚${effectTag}]${this.getRoleName(m.actorId)}→${m.targetId ? this.getRoleName(m.targetId) : '（无目标）'}：${content}`);
+          }
         }
       }
       
@@ -1099,6 +1239,15 @@ createApp({
         const usr = this.buildPhasePrompt(liveRole, round, phase, extra);
         console.debug('[AI][call]', { role: liveRole.name, phase, round, provider: liveRole.providerId, model: liveRole.modelId });
         try {
+          this.llmContextLog.push({
+            id: uid(),
+            roleId: liveRole.id,
+            round,
+            phase,
+            timestamp: new Date().toISOString(),
+            systemPrompt: sys,
+            phasePrompt: usr
+          });
           return await callLLMBackend(liveRole, sys, usr, { roleId: liveRole.id, roleName: liveRole.name, phase, round });
         } catch(err) {
           console.error('[AI][call][fatal]', { role: liveRole.name, phase, error: err.message });
@@ -1161,6 +1310,7 @@ createApp({
             multiplier: this.currentRuleSet.multiplier,
             punishCost: this.currentRuleSet.punishCost,
             punishPenalty: this.currentRuleSet.punishPenalty,
+            punishOnlyBreaker: this.currentRuleSet.punishOnlyBreaker,
             enablePromise: this.currentRuleSet.enablePromise,
             enablePrivateChat: this.currentRuleSet.enablePrivateChat,
             enablePublicChat: this.currentRuleSet.enablePublicChat,
@@ -1171,6 +1321,7 @@ createApp({
           },
           messages: this.messages,
           decisions: this.decisions,
+          promises: this.promises,
           scoreHistory: this.scoreHistory,
           finalScores: { ...this.scoreTotals }
         };
