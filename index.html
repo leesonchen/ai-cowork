@@ -255,9 +255,15 @@
                 chatView==='all'?'border-indigo-500 text-white':'border-transparent text-gray-500 hover:text-gray-300']">
               📋 全部日志
             </button>
-            <button @click="exportLogsMarkdown" class="ml-auto my-1 px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors">
-              ⬇️ 导出 Markdown
-            </button>
+            <div class="ml-auto flex items-center gap-3 text-xs text-gray-400">
+              <label class="flex items-center gap-1 cursor-pointer select-none">
+                <input type="checkbox" v-model="autoScrollEnabled" class="accent-indigo-500">
+                自动滚动
+              </label>
+              <button @click="exportLogsMarkdown" class="px-3 py-1 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors">
+                ⬇️ 导出 Markdown
+              </button>
+            </div>
           </div>
           <!-- Messages -->
           <div ref="chatContainer" class="flex-1 overflow-y-auto p-4 space-y-2 chat-area">
@@ -342,7 +348,12 @@
     <!-- ===== TAB: 统计分析 ===== -->
     <section v-show="activeTab==='stats'" class="h-full overflow-y-auto p-6">
       <div class="max-w-6xl mx-auto">
-        <h2 class="text-xl font-bold mb-4">📊 统计分析</h2>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-bold">📊 统计分析</h2>
+          <button @click="exportAllLLMContexts" class="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300">
+            ⬇️ 导出全部 LLM 上下文
+          </button>
+        </div>
         <!-- Chart -->
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
           <canvas ref="scoreChart" height="100"></canvas>
@@ -413,9 +424,22 @@
           <!-- Full Context Tab (What LLM sees) -->
           <div v-show="aiViewTab==='context'" class="space-y-3">
             <div>
-              <div class="text-sm text-gray-400 mb-1 font-semibold">🔍 当前轮次上下文</div>
+              <div class="text-sm text-gray-400 mb-1 font-semibold flex items-center justify-between">
+                <span>🔍 当前轮次上下文</span>
+                <div class="flex items-center gap-2">
+                  <button class="text-xs text-gray-400 hover:text-gray-200" @click="exportAllLLMContexts">
+                    ⬇️ 导出全部上下文
+                  </button>
+                  <button v-if="aiViewContextLatest" class="text-xs text-gray-500 hover:text-gray-300"
+                    @click="toggleContextEntry(aiViewContextLatest.id)">
+                    {{aiViewContextLatest.isExpanded ? '收起' : '展开'}}
+                  </button>
+                </div>
+              </div>
               <div class="text-xs text-gray-500 mb-2">与本轮发送给模型的系统提示词一致：</div>
-              <pre class="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{{formatContextBlock(aiViewContextLatest) || '暂无数据'}}</pre>
+              <div v-if="!aiViewContextLatest" class="text-xs text-gray-500">暂无数据</div>
+              <pre v-else v-show="aiViewContextLatest.isExpanded"
+                class="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{{formatContextBlock(aiViewContextLatest)}}</pre>
             </div>
             <div>
               <div class="text-sm text-gray-400 mb-2 font-semibold flex items-center justify-between">

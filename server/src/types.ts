@@ -112,4 +112,15 @@ export interface GameRecord {
   promises?: Array<{ roleId: string; round: number; amount: number; source?: string; updatedAt?: string }>;
   scoreHistory: GameScoreHistory[];
   finalScores: Record<string, number>;
+  llmContextLog?: Array<{
+    id: string;
+    roleId: string;
+    round: number;
+    phase: string;
+    timestamp: string;
+    systemPrompt?: string;
+    phasePrompt?: string;
+    response?: string;
+  }>;
+  monologueSummaries?: Array<{ roleId: string; round: number; summary: string; updatedAt?: string }>;
 }
