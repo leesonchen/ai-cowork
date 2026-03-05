@@ -83,6 +83,18 @@ createApp({
       gameHistory: [],
       showHistoryModal: false,
       viewingHistoryGame: null,
+      // Replay
+      isReplaying: false,
+      replayPaused: false,
+      replaySpeed: 1,
+      replayMessageIndex: 0,
+      replayMessages: [],
+      replayIntervalId: null,
+      replayTypewriter: true,
+      replaySimulateThinking: false,
+      replayCharIndex: 0,
+      replayCurrentContent: '',
+      replayIsThinking: false,
     };
   },
 
@@ -117,6 +129,26 @@ createApp({
     },
     phaseLabel() { return PHASE_LABELS[this.game.phase] || ''; },
     filteredMessages() {
+      // Replay mode: show messages up to current index with typewriter effect
+      if (this.isReplaying) {
+        const visible = this.replayMessages.slice(0, this.replayMessageIndex + 1).map(m => ({ ...m }));
+        // Apply typewriter effect to the last message
+        if (this.replayTypewriter && visible.length > 0) {
+          const lastIdx = visible.length - 1;
+          const lastMsg = visible[lastIdx];
+          if (lastMsg.type !== 'system' && lastMsg.type !== 'score_settle') {
+            const fullContent = lastMsg.rawContent || lastMsg.content;
+            // During thinking: hide content (show empty); after thinking: typewriter effect
+            const displayContent = this.replayIsThinking ? '' : fullContent.slice(0, this.replayCharIndex);
+            visible[lastIdx] = {
+              ...lastMsg,
+              content: displayContent,
+              rawContent: displayContent
+            };
+          }
+        }
+        return visible;
+      }
       if (this.chatView === 'all') return this.messages;
       if (this.chatView === 'public') {
         return this.messages.filter(m => {
@@ -1612,7 +1644,104 @@ createApp({
     closeHistoryModal() {
       this.showHistoryModal = false;
       this.viewingHistoryGame = null;
-    }
+    },
+    // ── Replay ──
+    startReplay() {
+      if (this.messages.length === 0) return;
+      this.stopReplay();
+      this.replayMessages = [...this.messages];
+      this.replayMessageIndex = 0;
+      this.replayCharIndex = 0;
+      this.isReplaying = true;
+      this.replayPaused = false;
+      this.chatView = 'all';
+      this.replayIsThinking = false;
+      this.startNextMessage();
+    },
+    startNextMessage() {
+      if (!this.isReplaying) return;
+      if (this.replayMessageIndex >= this.replayMessages.length) {
+        this.isReplaying = false;
+        return;
+      }
+      // Auto scroll to bottom
+      this.$nextTick(() => {
+        const c = this.$refs.chatContainer;
+        if (c) c.scrollTop = c.scrollHeight;
+      });
+      // Simulate thinking if enabled
+      if (this.replaySimulateThinking) {
+        const thinkTime = Math.random() * 2900 + 100; // 100ms ~ 3000ms
+        this.replayIsThinking = true;
+        this.replayCharIndex = 0;
+        this.replayIntervalId = setTimeout(() => {
+          this.replayIsThinking = false;
+          this.startTypewriter();
+        }, thinkTime / this.replaySpeed);
+      } else {
+        // No thinking simulation: reset charIndex and start typewriter directly
+        this.replayIsThinking = false;
+        this.replayCharIndex = 0;
+        this.startTypewriter();
+      }
+    },
+    startTypewriter() {
+      if (!this.isReplaying || this.replayPaused) return;
+      const currentMsg = this.replayMessages[this.replayMessageIndex];
+      if (!currentMsg || currentMsg.type === 'system' || currentMsg.type === 'score_settle') {
+        // System messages show instantly
+        this.replayMessageIndex++;
+        this.replayCharIndex = 0;
+        this.startNextMessage();
+        return;
+      }
+      const fullContent = currentMsg.content || '';
+      if (this.replayCharIndex >= fullContent.length) {
+        // Current message finished, move to next
+        this.replayMessageIndex++;
+        this.replayCharIndex = 0;
+        this.startNextMessage();
+        return;
+      }
+      const charInterval = 30 / this.replaySpeed; // 30ms per char at 1x
+      this.replayIntervalId = setTimeout(() => {
+        this.replayCharIndex++;
+        this.startTypewriter();
+      }, charInterval);
+    },
+    pauseReplay() {
+      this.replayPaused = true;
+      if (this.replayIntervalId) {
+        clearTimeout(this.replayIntervalId);
+        this.replayIntervalId = null;
+      }
+    },
+    resumeReplay() {
+      if (!this.isReplaying) return;
+      this.replayPaused = false;
+      if (this.replayIsThinking) {
+        this.startNextMessage();
+      } else if (this.replayCharIndex > 0) {
+        this.startTypewriter();
+      } else {
+        this.startNextMessage();
+      }
+    },
+    stopReplay() {
+      this.isReplaying = false;
+      this.replayPaused = false;
+      this.replayIsThinking = false;
+      if (this.replayIntervalId) {
+        clearTimeout(this.replayIntervalId);
+        this.replayIntervalId = null;
+      }
+      this.replayMessageIndex = 0;
+      this.replayCharIndex = 0;
+      this.replayMessages = [];
+    },
+    setReplaySpeed(speed) {
+      this.replaySpeed = speed;
+    },
   },
 
   // ── Lifecycle ──

@@ -20,6 +20,8 @@
   @keyframes blink { 0%,80%,100%{ opacity:0 } 40%{ opacity:1 } }
   .msg-enter { animation: slideIn 0.3s ease-out; }
   @keyframes slideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+  .msg-replay-highlight { animation: highlightPulse 0.5s ease-out; border-left: 3px solid #6366f1; background: rgba(99, 102, 241, 0.1); }
+  @keyframes highlightPulse { from { background: rgba(99, 102, 241, 0.3); } to { background: rgba(99, 102, 241, 0.1); } }
   .key-mask { -webkit-text-security: disc; }
 </style>
 </head>
@@ -256,6 +258,32 @@
               📋 全部日志
             </button>
             <div class="ml-auto flex items-center gap-3 text-xs text-gray-400">
+              <!-- Replay Button -->
+              <button v-if="!isReplaying && messages.length > 0" @click="startReplay" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-gray-300 transition-colors">
+                ▶️ 回放
+              </button>
+              <!-- Replay Controls -->
+              <div v-if="isReplaying" class="flex items-center gap-2 px-3 py-1 bg-indigo-900/50 rounded-lg">
+                <button v-if="!replayPaused" @click="pauseReplay" class="text-gray-300 hover:text-white">⏸️</button>
+                <button v-else @click="resumeReplay" class="text-gray-300 hover:text-white">▶️</button>
+                <select v-model.number="replaySpeed" @change="setReplaySpeed(replaySpeed)" class="bg-gray-800 text-gray-300 text-xs rounded px-1 py-0.5">
+                  <option value="0.5">0.5x</option>
+                  <option value="1">1x</option>
+                  <option value="2">2x</option>
+                  <option value="3">3x</option>
+                  <option value="5">5x</option>
+                </select>
+                <label class="flex items-center gap-1 cursor-pointer select-none" title="打字机效果">
+                  <input type="checkbox" v-model="replayTypewriter" class="accent-indigo-500">
+                  <span>打字</span>
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer select-none" title="模拟思考等待(0.1~3s)">
+                  <input type="checkbox" v-model="replaySimulateThinking" class="accent-indigo-500">
+                  <span>思考</span>
+                </label>
+                <span class="text-gray-400">{{replayMessageIndex}}/{{replayMessages.length}}</span>
+                <button @click="stopReplay" class="text-gray-300 hover:text-white">⏹️</button>
+              </div>
               <label class="flex items-center gap-1 cursor-pointer select-none">
                 <input type="checkbox" v-model="autoScrollEnabled" class="accent-indigo-500">
                 自动滚动
@@ -267,10 +295,17 @@
           </div>
           <!-- Messages -->
           <div ref="chatContainer" class="flex-1 overflow-y-auto p-4 space-y-2 chat-area">
+            <!-- Replay Thinking Indicator -->
+            <div v-if="isReplaying && replayIsThinking" class="flex items-center gap-2 text-sm text-amber-400 animate-pulse mb-2">
+              <span class="typing-dot w-2 h-2 bg-amber-400 rounded-full"></span>
+              <span class="typing-dot w-2 h-2 bg-amber-400 rounded-full"></span>
+              <span class="typing-dot w-2 h-2 bg-amber-400 rounded-full"></span>
+              <span>AI 思考中...</span>
+            </div>
             <div v-if="filteredMessages.length===0" class="text-center text-gray-600 text-sm mt-12">
               {{game.status==='idle'?'点击"开始游戏"开始博弈实验 🚀':'暂无消息'}}
             </div>
-            <div v-for="msg in filteredMessages" :key="msg.id" class="msg-enter">
+            <div v-for="(msg, idx) in filteredMessages" :key="msg.id" class="msg-enter" :class="{'msg-replay-highlight':isReplaying && idx === replayMessageIndex}">
               <!-- System message -->
               <div v-if="msg.type==='system'" class="text-center">
                 <span class="inline-block text-xs text-gray-500 bg-gray-800/50 rounded-full px-3 py-1">{{msg.content}}</span>
